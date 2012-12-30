@@ -1,22 +1,27 @@
 #!/bin/bash
 #Hopefully this configures EVERYTHING automagically.
-default_ca_location="/root/certtool/ca"
-default_domain="lab.local"
-base_directory="/root/certtool"
+source /etc/easy-certs
 echo "This will be executing with $base_directory as the base directory." \
 "If this is wrong, hit control-C NOW!"
-read -p "Client or Server: " type
-type=${type,,}
-[[ $type == s ]] && type="server"
-[[ $type == c ]] && type="client"
-if [[ $type == "server" ]] || [[ $type == "client" ]]
-    then
-	echo "Configuring as ${type,,}."
-    else
-	echo "$type is not 'Client' or 'Server'"
-	exit 1
-    fi
-read -p "$type's FQDN? (with . at end): " client_fqdn
+
+echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2)SSL"
+read purpose
+case $purpose in 
+    1)	read -p "Client or Server: " type
+	type=${type,,}
+	[[ $type == s ]] && type="server"
+	[[ $type == c ]] && type="client"
+	if [[ $type == "server" ]] || [[ $type == "client" ]]
+	    then
+		echo "Configuring as ${type,,}."
+	    else
+		echo "$type is not 'Client' or 'Server'"
+		exit 1
+	    fi
+	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_fqdn;;
+    2) type=" server"
+	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn ;;
+esac
 guess_name="${client_fqdn%%.$default_domain.}"
 read -p "$type's shortname (used for files) [$guess_name]: " shortname
 read -p "Requesting User: " requesting_user
@@ -63,6 +68,15 @@ encryption_key
 signing_key
 
 END_OF_INFO
+
+cat $info
+
+echo -e "\033[41;1m\033[32;1mIs this info correct and OK?\033[01;0m"
+read lastchance
+case $lastchance in
+	[yY])continue;;
+	*)echo "cancelled" >&2; exit 1;; 
+    esac
 
 
 if [ -e "$info" ]
