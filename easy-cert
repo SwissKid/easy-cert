@@ -23,54 +23,45 @@ command -v certtool >/dev/null 2>&1 || {
 }
 
 #Hopefully this configures EVERYTHING automagically.
-if [ -e "/etc/easy-certs.conf" ]
+if [ -r "/etc/easy-certs.conf" ]
     then
-	source /etc/easy-certs.conf
+	. /etc/easy-certs.conf
     else
 	echo "No /etc/easy-certs.conf found, can continue, but options may be missing...."
 fi
 
 
 #Let them provide a file to source to configure it alternatively.
-if [ -e "$@" ] ;
-	then source "$@"
-    else
-	[ -n "$@" ] && echo "$@ is not a valid file, not reading"
+[ "$@" ] && {
+    if [ -r "$@" ] 
+	then
+	    . "$@"
+    else 
+	echo "$@ is not a valid file, not reading"
 fi
+}
 
 ########################################################################3
 
 #Functions area. This is large.
 # Maybe I should move this to another sourced file?
+
+
+
 function generate_ca() {
     certtool --generate-self-signed \
-	    --template  \
-	    --load-privkey certificate_authority_key.pem \
-	    --outfile certificate_authority_certificate.pem
-
+	    --template $info \
+	    --load-privkey $key \
+	    --outfile $cert
 }
 
 
-function generate_cert() {
-certtool --generate-certificate \
-    --template $info \
-    --load-privkey $key \
-    --load-ca-certificate $ca_location/ca_certificate.pem \
-    --load-ca-privkey $ca_location/ca_key.pem \
-    --outfile $cert
-#They may need the CA certificate - this isn't a private key
-##so it's OK.
-cp $ca_location/ca_certificate.pem $working_directory/CA.crt
-#Pack it all up....
-tar czf $bundles_dir/$shortname.tar.gz -C "$workingdir/.." $pack_name/
-echo "Client certificate created, signed, and all the data the client may need is packaged in $pack_dir/$shortname.tar.gz"
-}
 
 
 
 function cert_info() {
     guess_name="${client_fqdn%%.$default_domain.}"
-    read -p "$type's shortname (used for files) [$guess_name]: " shortname
+    read -p "$type_tls's shortname (used for files) [$guess_name]: " shortname
     read -p "Requesting User: " requesting_user
     read -p "Their email [$requesting_user@$default_domain]: " user_email
     read -e -p "Location of CA files [$default_ca_location]: " ca_location
@@ -91,21 +82,25 @@ function key_decision() {
     genkey=${genkey:-n}
     if [[ $purpose == 1 ]]
 	then
-	    subfolder="tls/$type""s""/$shortname"
-	    pack_name=$shortname
+	    pack_dir="$base_directory/tls/$type_tls""s""/"
+	    subfolder="tls/$type_tls""s""/$shortname"
+	    pack_name="$shortname"
 	    working_directory="$base_directory/$subfolder"
 	elif [[ $purpose == 2 ]]
+	    then
+	    pack_dir="$base_directory/site/"
 	    subfolder="site/$client_fqdn"
-	    pack_name=$client_fqdn
+	    pack_name="$client_fqdn"
 	    working_directory="$base_directory/$subfolder"
 	elif [[ $purpose == 9 ]]
+	    then
 	    shortname="ca"
 	    working_directory="$ca_location"
 	    pack_name="ca"
     fi
     mkdir "$working_directory" -p
     cert="$working_directory/$shortname""_certificate.pem"
-    info="$working_directory/$shortname.info"
+    info="$working_directory/$shortname"".info"
     key="$working_directory/$shortname""_key.pem"
     case $genkey in
 	##Generate it with certtool so they're happier
@@ -132,35 +127,52 @@ function key_decision() {
 
 function generate_infofile() {
 ##The Certificate info file
-    echo "Generating $info"
-    cat > $info << END_OF_INFO
+echo "Generating $info"
+cat > $info << END_OF_INFO
 ##This is an infofile for certtool created by easy-cert
 serial = $serial_number
 country = $country
 state = $state
-locality = $locality
+locality = "$locality"
 organization = "$organization"
-unit = "${type^}"
+unit = "${type_tls^}"
 dns_name = "$client_fqdn"
 email = "$user_email"
 expiration_days = 365
 cn = $client_cn
-tls_www_$type
+tls_www_$type_tls
 encryption_key
 signing_key
 
 END_OF_INFO
 cat $info
 #Give them a chance to see what they're going to sign, and a chance to back out
-echo -e "\033[41;1m\033[32;1mIs this info correct and OK? [y/n]\033[01;0m"
+#"\033[41;1m" <-- makes and ugly background
+echo -e "\033[32;1mIs this info correct and OK? [y/n]\033[01;0m"
 read lastchance
 lastchance=${lastchance:-y}
 case $lastchance in
-	[yY]*)continue;;
+	[yY]*)
+	;;
 	*)echo "Cancelled" >&2; exit 1;; 
 esac
+}
 
 
+
+function generate_cert() {
+certtool --generate-certificate \
+    --template "$info" \
+    --load-privkey "$key" \
+    --load-ca-certificate "$ca_location/ca_certificate.pem" \
+    --load-ca-privkey "$ca_location/ca_key.pem" \
+    --outfile "$cert"
+#They may need the CA certificate - this isn't a private key
+##so it's OK.
+cp "$ca_location/ca_certificate.pem" "$working_directory/CA.crt"
+#Pack it all up....
+tar czf $bundles_dir/$shortname.tar.gz -C $pack_dir $pack_name
+echo "Client certificate created, signed, and all the data the client may need is packaged in $bundles_dir/$shortname.tar.gz"
 }
 ##############################################
 #End of Functions
@@ -171,30 +183,32 @@ esac
 echo "This will be executing with $base_directory as the base directory." \
 "If this is wrong, hit control-C NOW!"
 
-echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2)SSL \n9)Generate Certificate Authority"
+echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2) SSL \n 9) Generate Certificate Authority"
 read -p "Purpose: " purpose
 case $purpose in 
-    1)	read -p "Client or Server: " type
-	type=${type,,}
-	[[ $type == s ]] && type="server"
-	[[ $type == c ]] && type="client"
-	if [[ $type == "server" ]] || [[ $type == "client" ]]
+    1)
+	read -p "Client or Server: " type_tls
+	type_tls=${type_tls,,}
+	[[ $type_tls == s ]] && type_tls="server"
+	[[ $type_tls == c ]] && type_tls="client"
+	if [[ $type_tls == "server" ]] || [[ $type_tls == "client" ]]
 	    then
-		echo "Configuring as ${type,,}."
+		echo "Configuring as ${type_tls,,}."
 	    else
-		echo "$type is not 'Client' or 'Server'"
+		echo "$type_tls is not 'Client' or 'Server'"
 		exit 1
-	    fi
-	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_cn
-	read -p "$type's DNS Domain Name: " client_fqdn
+	fi
+	read -p "$type_tls's Friendly name (Common name, but doesn't have to match FQDN)" client_cn
+	read -p "$type_tls's DNS Domain Name: " client_fqdn
 	cert_info
 	key_decision
 	generate_infofile
 	generate_cert
 	;;
 
-    2)	type="server"
-	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn
+    2)	
+	type_tls="server"
+	read -p "$type_tls's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn
 	client_cn=$client_fqdn
 	cert_info
 	key_decision
@@ -203,17 +217,22 @@ case $purpose in
 	;;
 
     ##This is 9 cause it shouldn't be done by accident
-    9)read -e -p "Location of CA files [$default_ca_location]: " ca_location
+    9)
+	read -e -p "Location of CA files [$default_ca_location]: " ca_location
 	ca_location=${ca_location:-$default_ca_location}
-	if [ -e "$ca_location/ca_certificate.pem" ] || [ -e "$ca_location/ca_key.pem" ]
+	key="$ca_location/ca_key.pem"
+	cert="$ca_location/ca_certificate.pem"
+	info="$ca_location/ca.info"
+	if [ -e "$key" ] || [ -e "$cert" ]
 	    then
 		echo -e "The certificate or key for the CA already exists. This tool will not clobber those. \n" \
 		"If you want to generate a new Certificate Authority, please delete the old key and certificate."
 		exit 1
 	fi
-	if [ -e "$ca_location/ca.info" ] 
+	if [ -e "$info" ] 
+	    then
 	    echo "The current info file is:"
-	    cat "$ca_location/ca.info"
+	    cat "$info"
 	    read -p "Use old CA info file [Y/n]: " use_old
 	    use_old=${use_old:-y}
 	    case ${use_old,,} in
@@ -224,17 +243,22 @@ case $purpose in
 			exit 0
 		    ;;
 		    n*)
-			read -p "Common Name for Certificate Authority: " client_cn
-			read -p "Certificate Authority master email address: " user_email
-			read -p "Serial Number (hex, defaults to 01): " serial_number
-			key_decision
-			generate_infofile
-			generate_ca
 		    ;;
-
+		    *) echo "$use_old is unknown.... " 
+			exit 1
+		    ;;
+	    esac
+	fi
+	read -p "Common Name for Certificate Authority: " client_cn
+	read -p "Certificate Authority master email address: " user_email
+	read -p "Serial Number (hex, defaults to 01): " serial_number
+	key_decision
+	generate_infofile
+	generate_ca
+	;;
     *)	echo "$purpose is not 1 or 2. Please try again later...." >&2 
-    exit 1
-    ;;
+	exit 1
+	;;
 
 esac
 #And all done!
