@@ -5,20 +5,30 @@
 #                December 30, 2012               #
 #                                                #
 #           Make Cert-Tool Even Easier.          #
+# Important Files:                               #
+#     This one                                   #
+#     /etc/easy-cert.conf - Configuration        #
 #************************************************#
 
 #Comments will be laid out in "swissspeak." If you are confused,
-##do not panic. This only means you are still sane.
+# do not panic. This only means you are still sane.
 
 
-#Script Start!
+#A few initial tests before continuing.
+
 #Test that certtool exists
 command -v certtool >/dev/null 2>&1 || { 
     echo "This is a tool to make certtool easier, but you need to install it first!" >&2
     exit 1
 }
+
 #Hopefully this configures EVERYTHING automagically.
-[ -e "/etc/easy-certs.conf" ] source /etc/easy-certs.conf
+if [ -e "/etc/easy-certs.conf" ]
+    then
+	source /etc/easy-certs.conf
+    else
+	echo "No /etc/easy-certs.conf found, can continue, but options may be missing...."
+fi
 
 
 #Let them provide a file to source to configure it alternatively.
@@ -27,76 +37,104 @@ if [ -e "$@" ] ;
     else
 	[ -n "$@" ] && echo "$@ is not a valid file, not reading"
 fi
-echo "This will be executing with $base_directory as the base directory." \
-"If this is wrong, hit control-C NOW!"
 
-echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2)SSL"
-read -p "Purpose: " purpose
-case $purpose in 
-    1)	read -p "Client or Server: " type
-	type=${type,,}
-	[[ $type == s ]] && type="server"
-	[[ $type == c ]] && type="client"
-	if [[ $type == "server" ]] || [[ $type == "client" ]]
-	    then
-		echo "Configuring as ${type,,}."
-	    else
-		echo "$type is not 'Client' or 'Server'"
-		exit 1
-	    fi
-	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_cn
-	read -p "$type's DNS Domain Name: " client_fqdn;;
-    2)	type="server"
-	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn
-	client_cn=$client_fqdn;;
-    *)	echo "$purpose is not 1 or 2. Please try again later...." >&2 ; exit 1;;
-esac
-guess_name="${client_fqdn%%.$default_domain.}"
-read -p "$type's shortname (used for files) [$guess_name]: " shortname
-read -p "Requesting User: " requesting_user
-read -p "Their email [$requesting_user@$default_domain]: " user_email
-read -e -p "Location of CA files [$default_ca_location]: " ca_location
-[ -z "$ca_location" ] && ca_location="$default_ca_location"
-if [[ ! -d "$ca_location" ]]
-    then echo "$ca_location isn't a directory!" >&2 
-    exit 1
-fi
-read -e -p "Serial Number (hex, defaults to 01): " serial_number
-read -p "Generate key? [y/N] " genkey
-shortname=${shortname:-$guess_name}
-user_email=${user_email:-"$requesting_user@$default_domain"}
-serial_number=${serial_number:-01}
-genkey=${genkey:-n}
-if [[ $purpose == 1 ]]
-    then
-	subfolder="tls/$type""s""/$shortname"
-	pack_name=$shortname
-    elif [[ $purpose == 2 ]]
-	subfolder="site/$client_fqdn"
-	pack_name=$client_fqdn
-working_directory="$base_directory/$subfolder"
-##the -p flag is partially so it doesn't complain
-mkdir "$working_directory" -p
-#Make these variables to make it look cleaner later...
-cert="$working_directory/$shortname""_certificate.pem"
-info="$working_directory/$shortname.info"
-key="$working_directory/$shortname""_key.pem"
+########################################################################3
 
-##Figure out if we should make the key
-case $genkey in
+#Functions area. This is large.
+# Maybe I should move this to another sourced file?
+function generate_ca() {
+    certtool --generate-self-signed \
+	    --template  \
+	    --load-privkey certificate_authority_key.pem \
+	    --outfile certificate_authority_certificate.pem
+
+}
+
+
+function generate_cert() {
+certtool --generate-certificate \
+    --template $info \
+    --load-privkey $key \
+    --load-ca-certificate $ca_location/ca_certificate.pem \
+    --load-ca-privkey $ca_location/ca_key.pem \
+    --outfile $cert
+#They may need the CA certificate - this isn't a private key
+##so it's OK.
+cp $ca_location/ca_certificate.pem $working_directory/CA.crt
+#Pack it all up....
+tar czf $bundles_dir/$shortname.tar.gz -C "$workingdir/.." $pack_name/
+echo "Client certificate created, signed, and all the data the client may need is packaged in $pack_dir/$shortname.tar.gz"
+}
+
+
+
+function cert_info() {
+    guess_name="${client_fqdn%%.$default_domain.}"
+    read -p "$type's shortname (used for files) [$guess_name]: " shortname
+    read -p "Requesting User: " requesting_user
+    read -p "Their email [$requesting_user@$default_domain]: " user_email
+    read -e -p "Location of CA files [$default_ca_location]: " ca_location
+    ca_location="${ca_location:-$default_ca_location}"
+    if [[ ! -d "$ca_location" ]]
+	then echo "$ca_location isn't a directory! Fix this, then retry." >&2 
+	exit 1
+    fi
+    read -p "Serial Number (hex, defaults to 01): " serial_number
+    shortname=${shortname:-$guess_name}
+    user_email=${user_email:-"$requesting_user@$default_domain"}
+    serial_number=${serial_number:-01}
+}
+
+
+function key_decision() {
+    read -p "Generate key? [y/N] " genkey
+    genkey=${genkey:-n}
+    if [[ $purpose == 1 ]]
+	then
+	    subfolder="tls/$type""s""/$shortname"
+	    pack_name=$shortname
+	    working_directory="$base_directory/$subfolder"
+	elif [[ $purpose == 2 ]]
+	    subfolder="site/$client_fqdn"
+	    pack_name=$client_fqdn
+	    working_directory="$base_directory/$subfolder"
+	elif [[ $purpose == 9 ]]
+	    shortname="ca"
+	    working_directory="$ca_location"
+	    pack_name="ca"
+    fi
+    mkdir "$working_directory" -p
+    cert="$working_directory/$shortname""_certificate.pem"
+    info="$working_directory/$shortname.info"
+    key="$working_directory/$shortname""_key.pem"
+    case $genkey in
 	##Generate it with certtool so they're happier
-	[yY]*) certtool --generate-privkey > "$key";;
+	[yY]*)
+	    certtool --generate-privkey > "$key"
+	    ;;
 	##Just copy it, don't make them worry about their files getting modified
-	[nN]*) read -e -p "Path to client's key: " keyloc; cp "$keyloc" "$key" ;;
-	*) echo "$genkey is not Y or N, please try again next time..." >&2 ; exit 1 ;;
+	[nN]*)
+	    read -e -p "Path to key: " keyloc
+	    if [ -e "$keyloc" ]
+		then
+		    cp "$keyloc" "$key"
+		else
+		    echo "$keyloc does not exist. Please try again next time..." >&2
+		    exit 1
+		fi
+	    ;;
+	*)
+	    echo "$genkey is not Y or N. Please try again next time..." >&2
+	    exit 1
+	    ;;
     esac
+}
 
-
-
+function generate_infofile() {
 ##The Certificate info file
-echo "Generating $info"
-cat > $info << END_OF_INFO
-
+    echo "Generating $info"
+    cat > $info << END_OF_INFO
+##This is an infofile for certtool created by easy-cert
 serial = $serial_number
 country = $country
 state = $state
@@ -112,7 +150,6 @@ encryption_key
 signing_key
 
 END_OF_INFO
-
 cat $info
 #Give them a chance to see what they're going to sign, and a chance to back out
 echo -e "\033[41;1m\033[32;1mIs this info correct and OK? [y/n]\033[01;0m"
@@ -124,21 +161,82 @@ case $lastchance in
 esac
 
 
-##Big Cert-Tool Command!
-certtool --generate-certificate \
---template $info \
---load-privkey $key \
---load-ca-certificate $ca_location/ca_certificate.pem \
---load-ca-privkey $ca_location/ca_key.pem \
---outfile $cert
+}
+##############################################
+#End of Functions
+
+#Script Start! (Finally)
 
 
-#They may need the CA certificate - this isn't a private key
-##so it's OK.
-cp $ca_location/ca_certificate.pem $working_directory/CA.crt
-#Pack it all up....
-tar czf $bundles_dir/$shortname.tar.gz -C "$workingdir/.." $pack_name/
-echo "Client certificate signed, all the data the client may need is packaged in $pack_dir/$shortname.tar.gz"
+echo "This will be executing with $base_directory as the base directory." \
+"If this is wrong, hit control-C NOW!"
+
+echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2)SSL \n9)Generate Certificate Authority"
+read -p "Purpose: " purpose
+case $purpose in 
+    1)	read -p "Client or Server: " type
+	type=${type,,}
+	[[ $type == s ]] && type="server"
+	[[ $type == c ]] && type="client"
+	if [[ $type == "server" ]] || [[ $type == "client" ]]
+	    then
+		echo "Configuring as ${type,,}."
+	    else
+		echo "$type is not 'Client' or 'Server'"
+		exit 1
+	    fi
+	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_cn
+	read -p "$type's DNS Domain Name: " client_fqdn
+	cert_info
+	key_decision
+	generate_infofile
+	generate_cert
+	;;
+
+    2)	type="server"
+	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn
+	client_cn=$client_fqdn
+	cert_info
+	key_decision
+	generate_infofile
+	generate_cert
+	;;
+
+    ##This is 9 cause it shouldn't be done by accident
+    9)read -e -p "Location of CA files [$default_ca_location]: " ca_location
+	ca_location=${ca_location:-$default_ca_location}
+	if [ -e "$ca_location/ca_certificate.pem" ] || [ -e "$ca_location/ca_key.pem" ]
+	    then
+		echo -e "The certificate or key for the CA already exists. This tool will not clobber those. \n" \
+		"If you want to generate a new Certificate Authority, please delete the old key and certificate."
+		exit 1
+	fi
+	if [ -e "$ca_location/ca.info" ] 
+	    echo "The current info file is:"
+	    cat "$ca_location/ca.info"
+	    read -p "Use old CA info file [Y/n]: " use_old
+	    use_old=${use_old:-y}
+	    case ${use_old,,} in
+		    y*)
+			key_decision
+			generate_ca
+			echo "Certificate Authority Generated!"
+			exit 0
+		    ;;
+		    n*)
+			read -p "Common Name for Certificate Authority: " client_cn
+			read -p "Certificate Authority master email address: " user_email
+			read -p "Serial Number (hex, defaults to 01): " serial_number
+			key_decision
+			generate_infofile
+			generate_ca
+		    ;;
+
+    *)	echo "$purpose is not 1 or 2. Please try again later...." >&2 
+    exit 1
+    ;;
+
+esac
 #And all done!
 echo "Thank you for using easy-cert!"
 exit 0
