@@ -1,0 +1,84 @@
+#!/bin/bash
+#Hopefully this configures EVERYTHING automagically.
+default_ca_location="/root/certtool/ca"
+default_domain="lab.local"
+base_directory="/root/certtool"
+echo "This will be executing with $base_directory as the base directory." \
+"If this is wrong, hit control-C NOW!"
+read -p "Client or Server: " type
+type=${type,,}
+[[ $type == s ]] && type="server"
+[[ $type == c ]] && type="client"
+if [[ $type == "server" ]] || [[ $type == "client" ]]
+    then
+	echo "Configuring as ${type,,}."
+    else
+	echo "$type is not 'Client' or 'Server'"
+	exit 1
+    fi
+read -p "$type's FQDN? (with . at end): " client_fqdn
+guess_name="${client_fqdn%%.$default_domain.}"
+read -p "$type's shortname (used for files) [$guess_name]: " shortname
+read -p "Requesting User: " requesting_user
+read -p "Their email [$requesting_user@$default_domain]: " user_email
+read -e -p "Location of CA files [$default_ca_location]: " ca_location
+[ -z "$ca_location" ] && ca_location="$default_ca_location"
+if [[ ! -d "$ca_location" ]]; then echo "$ca_location isn't a directory!" >&2 ; exit 1; fi
+read -e -p "Serial Number (hex, defaults to 01): " serial_number
+read -p "Generate key? [y/N] " genkey
+shortname=${shortname:-$guess_name}
+user_email=${user_email:-"$requesting_user@$default_domain"}
+serial_number=${serial_number:-01}
+genkey=${genkey:-n}
+working_directory="$base_directory/$type"s"/$shortname"
+mkdir "$working_directory"
+key="$working_directory/$shortname""_key.pem"
+case $genkey in
+	[yY]*) certtool --generate-privkey > "$key";;
+	[nN]*) read -e -p "Path to client's key: " keyloc; cp "$keyloc" "$key" ;;
+	*) echo "$genkey is not Y or N, please try again next time..." >&2 ; exit 1 ;;
+    esac
+cert="$working_directory/$shortname""_certificate.pem"
+info="$working_directory/$shortname.info"
+echo "Generating $info"
+cat > $info << END_OF_INFO
+
+serial = $serial_number
+country = US
+state = California
+locality = Pomona
+organization = "Telecom Lab"
+unit = "${type^}"
+#user who asked
+##THIS MAKES THE CN ALL FUNNY :/
+#uid = "$requesting_user"
+#DNS name if required
+dns_name = "$client_fqdn"
+#Only if wanted
+#email = "$user_email"
+expiration_days = 365
+cn = $client_fqdn
+tls_www_$type
+encryption_key
+signing_key
+
+END_OF_INFO
+
+
+if [ -e "$info" ]
+    then 
+	[ -e "$key" ]  || certtool --generate-privkey > $key
+	certtool --generate-certificate \
+	--template $info \
+	--load-privkey $key \
+	--load-ca-certificate $ca_location/ca_certificate.pem \
+	--load-ca-privkey $ca_location/ca_key.pem \
+	--outfile $cert
+	cp $ca_location/ca_certificate.pem $working_directory/CA.crt
+    else 
+	echo "Something's missing! Check your files, the info file and the certificate auth location" >&2 
+	exit 1
+    fi
+
+
+
