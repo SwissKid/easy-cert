@@ -18,9 +18,12 @@ case $purpose in
 		echo "$type is not 'Client' or 'Server'"
 		exit 1
 	    fi
-	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_fqdn;;
-    2) type=" server"
-	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn ;;
+	read -p "$type's Friendly name (Common name, but doesn't have to match FQDN)" client_cn
+	read -p "$type's DNS Domain Name: " client_fqdn;;
+    2)	type="server"
+	read -p "$type's FQDN? (without . at end, remember wildcards if wanted): " client_fqdn
+	client_cn=$client_fqdn;;
+    *)	echo "$purpose is not 1 or 2. Please try again later...." >&2 ; exit 1;;
 esac
 guess_name="${client_fqdn%%.$default_domain.}"
 read -p "$type's shortname (used for files) [$guess_name]: " shortname
@@ -28,7 +31,10 @@ read -p "Requesting User: " requesting_user
 read -p "Their email [$requesting_user@$default_domain]: " user_email
 read -e -p "Location of CA files [$default_ca_location]: " ca_location
 [ -z "$ca_location" ] && ca_location="$default_ca_location"
-if [[ ! -d "$ca_location" ]]; then echo "$ca_location isn't a directory!" >&2 ; exit 1; fi
+if [[ ! -d "$ca_location" ]]
+    then echo "$ca_location isn't a directory!" >&2 
+    exit 1
+fi
 read -e -p "Serial Number (hex, defaults to 01): " serial_number
 read -p "Generate key? [y/N] " genkey
 shortname=${shortname:-$guess_name}
@@ -36,7 +42,8 @@ user_email=${user_email:-"$requesting_user@$default_domain"}
 serial_number=${serial_number:-01}
 genkey=${genkey:-n}
 working_directory="$base_directory/$type"s"/$shortname"
-mkdir "$working_directory"
+##the -p flag is partially so it doesn't complain
+mkdir "$working_directory" -p
 key="$working_directory/$shortname""_key.pem"
 case $genkey in
 	[yY]*) certtool --generate-privkey > "$key";;
@@ -49,20 +56,16 @@ echo "Generating $info"
 cat > $info << END_OF_INFO
 
 serial = $serial_number
-country = US
-state = California
-locality = Pomona
-organization = "Telecom Lab"
+country = $country
+state = $state
+locality = $locality
+organization = "$organization"
 unit = "${type^}"
-#user who asked
-##THIS MAKES THE CN ALL FUNNY :/
-#uid = "$requesting_user"
-#DNS name if required
 dns_name = "$client_fqdn"
 #Only if wanted
 #email = "$user_email"
 expiration_days = 365
-cn = $client_fqdn
+cn = $client_cn
 tls_www_$type
 encryption_key
 signing_key
@@ -71,12 +74,12 @@ END_OF_INFO
 
 cat $info
 
-echo -e "\033[41;1m\033[32;1mIs this info correct and OK?\033[01;0m"
+echo -e "\033[41;1m\033[32;1mIs this info correct and OK? [y/n]\033[01;0m"
 read lastchance
 case $lastchance in
 	[yY])continue;;
 	*)echo "cancelled" >&2; exit 1;; 
-    esac
+esac
 
 
 if [ -e "$info" ]
@@ -92,7 +95,7 @@ if [ -e "$info" ]
     else 
 	echo "Something's missing! Check your files, the info file and the certificate auth location" >&2 
 	exit 1
-    fi
+fi
 
 
 
