@@ -1,11 +1,37 @@
 #!/bin/bash
+#************************************************#
+#                  easy-cert                     #
+#                written by swiss                #
+#                December 30, 2012               #
+#                                                #
+#           Make Cert-Tool Even Easier.          #
+#************************************************#
+
+#Comments will be laid out in "swissspeak." If you are confused,
+##do not panic. This only means you are still sane.
+
+
+#Script Start!
+#Test that certtool exists
+command -v certtool >/dev/null 2>&1 || { 
+    echo "This is a tool to make certtool easier, but you need to install it first!" >&2
+    exit 1
+}
 #Hopefully this configures EVERYTHING automagically.
-source /etc/easy-certs
+[ -e "/etc/easy-certs.conf" ] source /etc/easy-certs.conf
+
+
+#Let them provide a file to source to configure it alternatively.
+if [ -e "$@" ] ;
+	then source "$@"
+    else
+	[ -n "$@" ] && echo "$@ is not a valid file, not reading"
+fi
 echo "This will be executing with $base_directory as the base directory." \
 "If this is wrong, hit control-C NOW!"
 
 echo -e "What is the purpose of this Certificate? \n 1) TLS \n 2)SSL"
-read purpose
+read -p "Purpose: " purpose
 case $purpose in 
     1)	read -p "Client or Server: " type
 	type=${type,,}
@@ -41,17 +67,33 @@ shortname=${shortname:-$guess_name}
 user_email=${user_email:-"$requesting_user@$default_domain"}
 serial_number=${serial_number:-01}
 genkey=${genkey:-n}
-working_directory="$base_directory/$type"s"/$shortname"
+if [[ $purpose == 1 ]]
+    then
+	subfolder="tls/$type""s""/$shortname"
+	pack_name=$shortname
+    elif [[ $purpose == 2 ]]
+	subfolder="site/$client_fqdn"
+	pack_name=$client_fqdn
+working_directory="$base_directory/$subfolder"
 ##the -p flag is partially so it doesn't complain
 mkdir "$working_directory" -p
+#Make these variables to make it look cleaner later...
+cert="$working_directory/$shortname""_certificate.pem"
+info="$working_directory/$shortname.info"
 key="$working_directory/$shortname""_key.pem"
+
+##Figure out if we should make the key
 case $genkey in
+	##Generate it with certtool so they're happier
 	[yY]*) certtool --generate-privkey > "$key";;
+	##Just copy it, don't make them worry about their files getting modified
 	[nN]*) read -e -p "Path to client's key: " keyloc; cp "$keyloc" "$key" ;;
 	*) echo "$genkey is not Y or N, please try again next time..." >&2 ; exit 1 ;;
     esac
-cert="$working_directory/$shortname""_certificate.pem"
-info="$working_directory/$shortname.info"
+
+
+
+##The Certificate info file
 echo "Generating $info"
 cat > $info << END_OF_INFO
 
@@ -62,8 +104,7 @@ locality = $locality
 organization = "$organization"
 unit = "${type^}"
 dns_name = "$client_fqdn"
-#Only if wanted
-#email = "$user_email"
+email = "$user_email"
 expiration_days = 365
 cn = $client_cn
 tls_www_$type
@@ -73,29 +114,31 @@ signing_key
 END_OF_INFO
 
 cat $info
-
+#Give them a chance to see what they're going to sign, and a chance to back out
 echo -e "\033[41;1m\033[32;1mIs this info correct and OK? [y/n]\033[01;0m"
 read lastchance
+lastchance=${lastchance:-y}
 case $lastchance in
-	[yY])continue;;
-	*)echo "cancelled" >&2; exit 1;; 
+	[yY]*)continue;;
+	*)echo "Cancelled" >&2; exit 1;; 
 esac
 
 
-if [ -e "$info" ]
-    then 
-	[ -e "$key" ]  || certtool --generate-privkey > $key
-	certtool --generate-certificate \
-	--template $info \
-	--load-privkey $key \
-	--load-ca-certificate $ca_location/ca_certificate.pem \
-	--load-ca-privkey $ca_location/ca_key.pem \
-	--outfile $cert
-	cp $ca_location/ca_certificate.pem $working_directory/CA.crt
-    else 
-	echo "Something's missing! Check your files, the info file and the certificate auth location" >&2 
-	exit 1
-fi
+##Big Cert-Tool Command!
+certtool --generate-certificate \
+--template $info \
+--load-privkey $key \
+--load-ca-certificate $ca_location/ca_certificate.pem \
+--load-ca-privkey $ca_location/ca_key.pem \
+--outfile $cert
 
 
-
+#They may need the CA certificate - this isn't a private key
+##so it's OK.
+cp $ca_location/ca_certificate.pem $working_directory/CA.crt
+#Pack it all up....
+tar czf $bundles_dir/$shortname.tar.gz -C "$workingdir/.." $pack_name/
+echo "Client certificate signed, all the data the client may need is packaged in $pack_dir/$shortname.tar.gz"
+#And all done!
+echo "Thank you for using easy-cert!"
+exit 0
